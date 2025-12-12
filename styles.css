@@ -617,11 +617,33 @@ body {
     padding: 1.5rem;
     overflow-x: auto;
     font-size: 0.875rem;
-    line-height: 1.6;
+    line-height: 1.8;
+    max-height: 60vh;
+    overflow-y: auto;
 }
 
 .code-container code {
     font-family: 'Fira Code', 'Consolas', monospace;
+    display: block;
+}
+
+.code-container::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+.code-container::-webkit-scrollbar-track {
+    background: var(--surface);
+    border-radius: 4px;
+}
+
+.code-container::-webkit-scrollbar-thumb {
+    background: var(--surface-light);
+    border-radius: 4px;
+}
+
+.code-container::-webkit-scrollbar-thumb:hover {
+    background: var(--border);
 }
 
 /* ===== TOAST ===== */
@@ -669,6 +691,230 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
     background: var(--border);
+}
+
+/* ===== BACK BUTTON ===== */
+.back-btn {
+    background: var(--primary) !important;
+    color: white !important;
+}
+
+.back-btn:hover {
+    background: var(--primary-dark) !important;
+}
+
+/* ===== DEPENDENCIES PANEL ===== */
+.dependencies-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.dependencies-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.dependencies-header i {
+    color: var(--primary);
+    font-size: 1.25rem;
+}
+
+.dependencies-header h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 0;
+}
+
+.dependencies-hint {
+    margin-left: auto;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.color-legend-notice {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    background: var(--bg-dark);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    margin-bottom: 1rem;
+    font-size: 0.875rem;
+    color: var(--text-muted);
+}
+
+.color-legend-notice i {
+    color: var(--accent);
+}
+
+.dependencies-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.dependency-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    background: var(--bg-dark);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+    transition: all 0.3s ease;
+}
+
+.dependency-item:hover {
+    background: var(--surface-light);
+    transform: translateX(5px);
+}
+
+.dependency-badge {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    box-shadow: 0 0 10px currentColor;
+}
+
+.dependency-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 0;
+}
+
+.dependency-info strong {
+    color: var(--text);
+    font-size: 0.875rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dependency-path {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dependency-imports {
+    color: var(--primary);
+    font-size: 0.7rem;
+    font-family: 'Fira Code', monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 0.25rem;
+    display: block;
+}
+
+.jump-to-node {
+    background: var(--primary);
+    border: none;
+    color: white;
+    width: 32px;
+    height: 32px;
+    border-radius: 0.5rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.3s ease;
+    flex-shrink: 0;
+}
+
+.jump-to-node:hover {
+    background: var(--primary-dark);
+    transform: scale(1.1);
+}
+
+/* ===== DEPENDENCY HIGHLIGHTING ===== */
+.dependency-highlight {
+    position: relative;
+    padding: 1px 3px;
+    border-radius: 3px;
+    transition: all 0.2s ease;
+    font-weight: 600;
+    display: inline-block;
+    margin: 0 1px;
+}
+
+.dependency-highlight:hover {
+    transform: translateY(-2px) scale(1.05);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    z-index: 10;
+    filter: brightness(1.2);
+}
+
+.dependency-highlight::before {
+    content: '';
+    position: absolute;
+    top: -2px;
+    left: -2px;
+    right: -2px;
+    bottom: -2px;
+    border-radius: 4px;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    pointer-events: none;
+    border: 2px solid currentColor;
+}
+
+.dependency-highlight:hover::before {
+    opacity: 0.5;
+}
+
+.dependency-highlight::after {
+    content: attr(title);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%) translateY(-5px);
+    background: var(--bg-dark);
+    border: 2px solid currentColor;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.5rem;
+    white-space: nowrap;
+    font-size: 0.75rem;
+    font-weight: 500;
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.3s ease;
+    z-index: 1000;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    color: var(--text);
+}
+
+.dependency-highlight:hover::after {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+/* Animate highlight appearance */
+@keyframes highlightAppear {
+    from {
+        opacity: 0;
+        transform: scale(0.9);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.dependency-highlight {
+    animation: highlightAppear 0.3s ease-out;
 }
 
 /* ===== RESPONSIVE ===== */

@@ -12,6 +12,8 @@ let simulation = null;
 let svg = null;
 let zoom = null;
 let showLabels = true;
+let detailedDependencies = []; // Stores file dependencies with import info
+let currentFileNode = null; // Currently viewed file
 
 // ===== FILE TYPE COLORS =====
 const fileColors = {
@@ -136,23 +138,35 @@ async function scanRepository(owner, repo, path = '', files = []) {
 // ===== DEPENDENCY ANALYSIS =====
 function analyzeDependencies(files, contents) {
     const dependencies = [];
+    detailedDependencies = [];
     
     files.forEach((file, index) => {
         const content = contents[index];
         if (!content) return;
         
-        const imports = extractImports(content, file.path);
+        const imports = extractImportsDetailed(content, file.path);
         
-        imports.forEach(importPath => {
+        imports.forEach(importInfo => {
             const targetIndex = files.findIndex(f => {
-                const normalizedPath = importPath.replace(/^\.\//, '').replace(/^\.\.\//, '');
-                return f.path.includes(normalizedPath) || f.name === importPath;
+                const normalizedPath = importInfo.path.replace(/^\.\//, '').replace(/^\.\.\//, '');
+                return f.path.includes(normalizedPath) || f.name === importInfo.path || f.path.endsWith(importInfo.path + getFileExtension(f.name));
             });
             
             if (targetIndex !== -1) {
                 dependencies.push({
                     source: index,
                     target: targetIndex
+                });
+                
+                // Store detailed dependency info
+                detailedDependencies.push({
+                    sourceIndex: index,
+                    targetIndex: targetIndex,
+                    importStatement: importInfo.statement,
+                    importedNames: importInfo.names,
+                    lineNumber: importInfo.line,
+                    path: importInfo.path,
+                    targetFile: files[targetIndex]
                 });
             }
         });
@@ -161,50 +175,126 @@ function analyzeDependencies(files, contents) {
     return dependencies;
 }
 
-function extractImports(content, filePath) {
+function extractImportsDetailed(content, filePath) {
     const imports = [];
     const ext = getFileExtension(filePath);
+    const lines = content.split('\n');
     
     // JavaScript/TypeScript imports
     if (['.js', '.jsx', '.ts', '.tsx'].includes(ext)) {
-        const importRegex = /import\s+.*?from\s+['"]([^'"]+)['"]/g;
-        const requireRegex = /require\(['"]([^'"]+)['"]\)/g;
+        const importRegex = /import\s+(?:([\w\s{},*]+)\s+from\s+)?['"]([^'"]+)['"]\s*/g;
+        const requireRegex = /(?:const|let|var)\s+([\w{},\s]+)\s*=\s*require\(['"]([^'"]+)['"]\)/g;
         
         let match;
         while ((match = importRegex.exec(content)) !== null) {
-            if (!match[1].startsWith('@') && !match[1].startsWith('http')) {
-                imports.push(match[1]);
+            if (!match[2].startsWith('@') && !match[2].startsWith('http') && match[2].startsWith('.')) {
+                const lineNumber = content.substring(0, match.index).split('\n').length;
+                imports.push({
+                    statement: match[0],
+                    names: match[1] ? match[1].trim().split(',').map(n => n.trim()) : [],
+                    path: match[2],
+                    line: lineNumber
+                });
             }
         }
         while ((match = requireRegex.exec(content)) !== null) {
-            if (!match[1].startsWith('@') && !match[1].startsWith('http')) {
-                imports.push(match[1]);
+            if (!match[2].startsWith('@') && !match[2].startsWith('http') && match[2].startsWith('.')) {
+                const lineNumber = content.substring(0, match.index).split('\n').length;
+                imports.push({
+                    statement: match[0],
+                    names: match[1] ? match[1].trim().split(',').map(n => n.trim()) : [],
+                    path: match[2],
+                    line: lineNumber
+                });
             }
         }
     }
     
     // Python imports
     if (ext === '.py') {
-        const importRegex = /(?:from|import)\s+([^\s]+)/g;
+        const fromImportRegex = /from\s+([\.\w]+)\s+import\s+([\w,\s*]+)/g;
+        const importRegex = /import\s+([\.\w]+)/g;
+        
         let match;
+        while ((match = fromImportRegex.exec(content)) !== null) {
+            if (match[1].startsWith('.')) {
+                const lineNumber = content.substring(0, match.index).split('\n').length;
+                imports.push({
+                    statement: match[0],
+                    names: match[2].split(',').map(n => n.trim()),
+                    path: match[1],
+                    line: lineNumber
+                });
+            }
+        }
         while ((match = importRegex.exec(content)) !== null) {
-            if (match[1] !== 'import' && !match[1].includes('.')) {
-                imports.push(match[1]);
+            if (match[1].startsWith('.')) {
+                const lineNumber = content.substring(0, match.index).split('\n').length;
+                imports.push({
+                    statement: match[0],
+                    names: [match[1]],
+                    path: match[1],
+                    line: lineNumber
+                });
             }
         }
     }
     
-    // Java imports
-    if (ext === '.java') {
-        const importRegex = /import\s+([^\s;]+);/g;
-        let match;
-        while ((match = importRegex.exec(content)) !== null) {
-            const className = match[1].split('.').pop();
-            imports.push(className);
-        }
-    }
-    
     return imports;
+}
+
+function findImportUsages(content, importedNames, filePath, importLine) {
+    const usages = [];
+    const ext = getFileExtension(filePath);
+    const lines = content.split('\n');
+    
+    importedNames.forEach(name => {
+        // Clean the name - handle destructured imports, default imports, etc.
+        let cleanName = name.trim();
+        
+        // Handle "{ Component }" -> "Component"
+        cleanName = cleanName.replace(/[{}]/g, '').trim();
+        
+        // Handle "Component as Comp" -> "Comp" (use the alias)
+        if (cleanName.includes(' as ')) {
+            cleanName = cleanName.split(' as ')[1].trim();
+        }
+        
+        // Handle "* as module" -> "module"
+        if (cleanName.startsWith('* as ')) {
+            cleanName = cleanName.substring(5).trim();
+        }
+        
+        // Handle default imports and named imports
+        cleanName = cleanName.split(',')[0].trim();
+        
+        if (!cleanName || cleanName === '*') return;
+        
+        lines.forEach((line, index) => {
+            const lineNumber = index + 1;
+            
+            // Skip the import line itself
+            if (lineNumber === importLine) return;
+            
+            // Skip other import/require lines
+            if (line.trim().startsWith('import ') || line.trim().startsWith('from ')) return;
+            if (line.includes('require(') && line.includes(cleanName) && line.includes('=')) return;
+            
+            // Look for usage of imported name
+            const usageRegex = new RegExp(`\\b${cleanName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
+            let match;
+            while ((match = usageRegex.exec(line)) !== null) {
+                usages.push({
+                    line: lineNumber,
+                    column: match.index,
+                    name: cleanName,
+                    context: line.trim()
+                });
+            }
+        });
+    });
+    
+    return usages;
 }
 
 // ===== GRAPH VISUALIZATION =====
@@ -406,7 +496,11 @@ async function showFileModal(fileNode) {
     const codeContent = document.getElementById('codeContent');
     const linesCount = document.getElementById('linesCount');
     const fileSize = document.getElementById('fileSize');
+    const dependenciesPanel = document.getElementById('dependenciesPanel');
+    const dependenciesList = document.getElementById('dependenciesList');
+    const dependenciesInfo = document.getElementById('dependenciesInfo');
     
+    currentFileNode = fileNode;
     modalTitle.textContent = fileNode.path;
     codeContent.textContent = 'Loading...';
     
@@ -419,15 +513,66 @@ async function showFileModal(fileNode) {
             const lines = content.split('\n').length;
             const size = (new Blob([content]).size / 1024).toFixed(2);
             
+            // Get dependencies for this file
+            const fileDeps = detailedDependencies.filter(dep => dep.sourceIndex === fileNode.id);
+            dependenciesInfo.textContent = fileDeps.length;
+            
+            // Show dependencies panel if there are any
+            if (fileDeps.length > 0) {
+                dependenciesPanel.style.display = 'block';
+                dependenciesList.innerHTML = '';
+                
+                // Use the same color palette as highlighting
+                const colors = [
+                    '#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6',
+                    '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#84cc16',
+                    '#6366f1', '#a855f7', '#eab308', '#22c55e', '#0ea5e9'
+                ];
+                
+                fileDeps.forEach((dep, index) => {
+                    const highlightColor = colors[index % colors.length];
+                    const depItem = document.createElement('div');
+                    depItem.className = 'dependency-item';
+                    depItem.style.setProperty('--dep-color', highlightColor);
+                    depItem.innerHTML = `
+                        <div class="dependency-badge" style="background: ${highlightColor}; box-shadow: 0 0 10px ${highlightColor}80;"></div>
+                        <div class="dependency-info">
+                            <strong>${dep.targetFile.name}</strong>
+                            <span class="dependency-path">${dep.targetFile.path}</span>
+                            <span class="dependency-imports">Imports: ${dep.importedNames.join(', ')}</span>
+                        </div>
+                        <button class="jump-to-node" data-node-id="${dep.targetIndex}" title="Jump to node in graph">
+                            <i class="fas fa-external-link-alt"></i>
+                        </button>
+                    `;
+                    dependenciesList.appendChild(depItem);
+                });
+                
+                // Add click handlers for jump buttons
+                document.querySelectorAll('.jump-to-node').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        const nodeId = parseInt(e.currentTarget.dataset.nodeId);
+                        jumpToNode(nodeId);
+                    });
+                });
+            } else {
+                dependenciesPanel.style.display = 'none';
+            }
+            
+            // Apply syntax highlighting first
             codeContent.textContent = content;
             linesCount.textContent = lines;
             fileSize.textContent = size;
             
-            // Apply syntax highlighting
             const ext = getFileExtension(fileNode.name);
             const language = ext.substring(1);
             codeContent.className = `language-${language}`;
             hljs.highlightElement(codeContent);
+            
+            // Now add dependency highlighting
+            if (fileDeps.length > 0) {
+                highlightDependencies(codeContent, content, fileDeps);
+            }
             
             // Store content for copy/download
             codeContent.dataset.content = content;
@@ -439,9 +584,283 @@ async function showFileModal(fileNode) {
     }
 }
 
+function highlightDependencies(codeElement, content, fileDeps) {
+    const lines = content.split('\n');
+    let processedContent = codeElement.innerHTML;
+    
+    // Create a color palette with distinct colors for each dependency
+    const colors = [
+        '#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6',
+        '#ec4899', '#14b8a6', '#f97316', '#06b6d4', '#84cc16',
+        '#6366f1', '#a855f7', '#eab308', '#22c55e', '#0ea5e9'
+    ];
+    
+    // Track all replacements to avoid conflicts
+    const replacements = [];
+    
+    fileDeps.forEach((dep, depIndex) => {
+        // Use a distinct color for each dependency (cycle through palette)
+        const color = colors[depIndex % colors.length];
+        
+        // Find and highlight all usages of imported names
+        if (dep.importedNames && dep.importedNames.length > 0) {
+            const usages = findImportUsages(content, dep.importedNames, currentFileNode.path, dep.lineNumber);
+            
+            // Group usages by line for better processing
+            const usagesByLine = {};
+            usages.forEach(usage => {
+                if (!usagesByLine[usage.line]) {
+                    usagesByLine[usage.line] = [];
+                }
+                usagesByLine[usage.line].push(usage);
+            });
+            
+            // Store replacements with metadata
+            usages.forEach(usage => {
+                replacements.push({
+                    name: usage.name,
+                    line: usage.line,
+                    depIndex: depIndex,
+                    nodeId: dep.targetIndex,
+                    color: color,
+                    fileName: dep.targetFile.name
+                });
+            });
+        }
+    });
+    
+    // Sort replacements by length (longest first) to avoid partial replacements
+    replacements.sort((a, b) => b.name.length - a.name.length);
+    
+    // Remove duplicates (same name, prefer first occurrence)
+    const uniqueReplacements = [];
+    const seen = new Set();
+    replacements.forEach(rep => {
+        if (!seen.has(rep.name)) {
+            seen.add(rep.name);
+            uniqueReplacements.push(rep);
+        }
+    });
+    
+    // Apply highlighting to each unique imported name
+    uniqueReplacements.forEach(rep => {
+        const escapedName = rep.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        
+        // Create a more sophisticated regex that avoids replacing inside:
+        // - HTML tags
+        // - Already highlighted spans
+        // - Import/require statements
+        const parts = processedContent.split(new RegExp(`(${escapedName})`, 'g'));
+        let result = '';
+        let inTag = false;
+        let inHighlight = false;
+        let inImport = false;
+        
+        parts.forEach((part, i) => {
+            // Check context
+            if (part.includes('<span class="dependency-highlight"')) inHighlight = true;
+            if (part.includes('</span>') && inHighlight) inHighlight = false;
+            if (part.includes('<')) inTag = true;
+            if (part.includes('>')) inTag = false;
+            
+            // Check if we're in an import line (look back in result)
+            const recentContext = result.slice(-200);
+            inImport = recentContext.includes('import ') || recentContext.includes('require(');
+            if (recentContext.includes('\n') || recentContext.includes('<br>')) {
+                // New line, reset import check
+                const lastLineBreak = Math.max(recentContext.lastIndexOf('\n'), recentContext.lastIndexOf('<br>'));
+                const currentLine = recentContext.slice(lastLineBreak);
+                inImport = currentLine.includes('import ') || currentLine.includes('require(');
+            }
+            
+            // Only highlight if it's the exact match and not in a problematic context
+            if (part === rep.name && !inTag && !inHighlight && !inImport) {
+                result += `<span class="dependency-highlight" data-dep-index="${rep.depIndex}" data-node-id="${rep.nodeId}" style="background: ${rep.color}40; border-bottom: 2px solid ${rep.color}; cursor: pointer; padding: 1px 3px; border-radius: 2px;" title="From: ${rep.fileName} - Click to navigate">${part}</span>`;
+            } else {
+                result += part;
+            }
+        });
+        
+        processedContent = result;
+    });
+    
+    codeElement.innerHTML = processedContent;
+    
+    // Add click handlers to highlights
+    document.querySelectorAll('.dependency-highlight').forEach(highlight => {
+        highlight.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const nodeId = parseInt(e.target.dataset.nodeId);
+            const depIndex = parseInt(e.target.dataset.depIndex);
+            
+            // Close current modal and navigate
+            closeModal();
+            showToast(`Navigating to: ${fileDeps[depIndex].targetFile.name}`);
+            
+            // Jump to node and open it after animation
+            jumpToNodeAndOpen(nodeId);
+        });
+        
+        // Add hover effect
+        highlight.addEventListener('mouseenter', (e) => {
+            e.target.style.transform = 'translateY(-1px)';
+            e.target.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.3)';
+        });
+        
+        highlight.addEventListener('mouseleave', (e) => {
+            e.target.style.transform = 'translateY(0)';
+            e.target.style.boxShadow = 'none';
+        });
+    });
+}
+
+function jumpToNode(nodeId) {
+    highlightNodeInGraph(nodeId);
+    closeModal();
+    
+    // Focus on the node
+    const node = graphData.nodes.find(n => n.id === nodeId);
+    if (node && svg) {
+        const container = document.getElementById('graphContainer');
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+        
+        // Center the node
+        const scale = 1.5;
+        const x = width / 2 - node.x * scale;
+        const y = height / 2 - node.y * scale;
+        
+        svg.transition()
+            .duration(750)
+            .call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
+    }
+}
+
+function jumpToNodeAndOpen(nodeId) {
+    // Close current modal first
+    const node = graphData.nodes.find(n => n.id === nodeId);
+    if (!node) return;
+    
+    // Highlight the path and zoom
+    highlightNodeInGraph(nodeId);
+    
+    // Focus on the node
+    if (svg) {
+        const container = document.getElementById('graphContainer');
+        const width = container.clientWidth;
+        const height = container.clientHeight;
+        
+        // Center the node with animation
+        const scale = 1.5;
+        const x = width / 2 - node.x * scale;
+        const y = height / 2 - node.y * scale;
+        
+        svg.transition()
+            .duration(750)
+            .call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale))
+            .on('end', () => {
+                // After zoom animation completes, open the node's modal
+                setTimeout(() => {
+                    showFileModal(node);
+                }, 200);
+            });
+    }
+}
+
+function highlightNodeInGraph(nodeId) {
+    // Reset all nodes first
+    d3.selectAll('#graphContainer circle')
+        .transition()
+        .duration(200)
+        .attr('stroke-width', 2)
+        .attr('stroke', '#fff')
+        .attr('opacity', 0.5);
+    
+    // Highlight the target node with pulsing animation
+    d3.selectAll('#graphContainer circle')
+        .filter(d => d.id === nodeId)
+        .transition()
+        .duration(300)
+        .attr('stroke-width', 5)
+        .attr('stroke', '#10b981')
+        .attr('opacity', 1)
+        .transition()
+        .duration(400)
+        .attr('stroke-width', 8)
+        .attr('r', d => Math.max(12, Math.min(24, Math.sqrt(d.size / 100) + 6)))
+        .transition()
+        .duration(400)
+        .attr('stroke-width', 5)
+        .attr('r', d => Math.max(8, Math.min(20, Math.sqrt(d.size / 100))));
+    
+    // Also highlight source node if exists
+    if (currentFileNode) {
+        d3.selectAll('#graphContainer circle')
+            .filter(d => d.id === currentFileNode.id)
+            .transition()
+            .duration(300)
+            .attr('stroke-width', 4)
+            .attr('stroke', '#3b82f6')
+            .attr('opacity', 1);
+    }
+    
+    // Reset all links first
+    d3.selectAll('#graphContainer line')
+        .transition()
+        .duration(200)
+        .attr('stroke-opacity', 0.15)
+        .attr('stroke-width', 2)
+        .attr('stroke', '#64748b');
+    
+    // Highlight the connection path
+    d3.selectAll('#graphContainer line')
+        .filter(d => {
+            if (currentFileNode) {
+                return (d.source.id === currentFileNode.id && d.target.id === nodeId) ||
+                       (d.target.id === currentFileNode.id && d.source.id === nodeId);
+            }
+            return false;
+        })
+        .transition()
+        .duration(300)
+        .attr('stroke-opacity', 1)
+        .attr('stroke-width', 4)
+        .attr('stroke', '#10b981')
+        .transition()
+        .duration(500)
+        .attr('stroke-width', 3);
+    
+    // Restore other nodes after a delay
+    setTimeout(() => {
+        d3.selectAll('#graphContainer circle')
+            .filter(d => d.id !== nodeId && (!currentFileNode || d.id !== currentFileNode.id))
+            .transition()
+            .duration(500)
+            .attr('opacity', 1);
+        
+        d3.selectAll('#graphContainer line')
+            .transition()
+            .duration(500)
+            .attr('stroke-opacity', 0.4);
+    }, 1500);
+}
+
 function closeModal() {
     const modal = document.getElementById('codeModal');
     modal.classList.remove('active');
+}
+
+function backToInput() {
+    document.getElementById('graphSection').style.display = 'none';
+    document.getElementById('hero').style.display = 'block';
+    
+    // Reset graph
+    if (svg) {
+        d3.select('#graphContainer').selectAll('*').remove();
+    }
+    graphData = { nodes: [], links: [] };
+    simulation = null;
 }
 
 // ===== CONTROL FUNCTIONS =====
@@ -540,6 +959,9 @@ document.addEventListener('DOMContentLoaded', () => {
     
     document.getElementById('closeModal').addEventListener('click', closeModal);
     document.getElementById('modalBackdrop').addEventListener('click', closeModal);
+    
+    // Back button
+    document.getElementById('backToInput').addEventListener('click', backToInput);
     
     document.getElementById('copyCode').addEventListener('click', () => {
         const codeContent = document.getElementById('codeContent');
